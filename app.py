@@ -188,66 +188,82 @@ def generate_minimal_attendance_sheet(dates_df,
     return virtual_workbook
 
 #======================================================================
-# STEP 3: STREAMLIT USER INTERFACE
-# This is the new code that creates the web page.
+# STREAMLIT USER INTERFACE (REDESIGNED)
 #======================================================================
 
-st.set_page_config(layout="centered", page_title="سازنده فرم حضور و غیاب")
+st.set_page_config(layout="centered", page_title="سازنده فرم حضور و غیاب", page_icon="📄")
 
-# --- Right-to-Left (RTL) CSS ---
+# --- CUSTOM FONT AND RTL CSS ---
 st.markdown("""
     <style>
-    body {
+    @import url('https://fonts.googleapis.com/css2?family=Vazirmatn&display=swap');
+    html, body, [class*="st-"], [class*="css-"] {
+        font-family: 'Vazirmatn', sans-serif;
         direction: rtl;
     }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("📄 سازنده فرم حضور و غیاب")
-st.write("سال و ماه مورد نظر خود را به عدد وارد کنید و سپس دکمه ساخت فایل را بزنید.")
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("تنظیمات")
+st.sidebar.write("سال و ماه مورد نظر خود را انتخاب کنید.")
 
-# --- Input Fields ---
-col1, col2 = st.columns(2)
-with col1:
-    target_year = st.number_input("سال را وارد کنید (مثلا: 1404)", min_value=1390, max_value=1450, value=1404, help="سال شمسی را به صورت عدد وارد کنید")
-with col2:
-    target_month = st.number_input("ماه را وارد کنید (مثلا: برای مهر 7)", min_value=1, max_value=12, value=7, help="عدد ماه را بین 1 تا 12 وارد کنید")
+target_year = st.sidebar.number_input("سال (مثلا: 1404)", min_value=1390, max_value=1450, value=1404)
+target_month = st.sidebar.number_input("ماه (مثلا: برای مهر 7)", min_value=1, max_value=12, value=7)
+
+with st.sidebar.expander("تنظیمات پیشرفته (اختیاری)"):
+    st.write("می‌توانید اندازه فونت و ستون‌ها را تغییر دهید.")
+    header_font_size = st.slider("اندازه فونت سربرگ", 8, 20, 12)
+    cell_font_size = st.slider("اندازه فونت داخلی", 8, 20, 11)
+    col_c_width = st.slider("عرض ستون 'زنگ'", 5, 20, 8)
+    col_d_width = st.slider("عرض ستون 'غایبین'", 20, 60, 45)
+
+# --- MAIN PAGE ---
+st.title("📄 سازنده فرم حضور و غیاب")
+st.markdown("این برنامه به شما کمک می‌کند تا به سرعت فرم حضور و غیاب ماهانه برای کلاس خود بسازید.")
+
+st.markdown("---")
+st.subheader("راهنما")
+st.write("""
+1.  از منوی کنار صفحه، **سال** و **ماه** مورد نظر خود را وارد کنید.
+2.  روی دکمه **ساخت فایل اکسل** کلیک کنید.
+3.  منتظر بمانید تا فایل ساخته شود و سپس دکمه **دانلود** ظاهر خواهد شد.
+""")
 
 # --- Generate Button ---
-if st.button("ساخت فایل اکسل"):
-    with st.spinner("در حال دریافت اطلاعات و ساخت فایل... لطفا صبر کنید"):
+if st.sidebar.button("ساخت فایل اکسل", type="primary"):
+    
+    # 1. Get the data from the API
+    dates_dataframe = get_calendar_from_api(target_year, target_month)
+
+    # 2. Generate the Excel file if data was found
+    if dates_dataframe is not None and not dates_dataframe.empty:
         
-        # 1. Get the data from the API
-        dates_dataframe = get_calendar_from_api(target_year, target_month)
+        # Define styles based on advanced options
+        custom_font_sizes = {'header': header_font_size, 'cell': cell_font_size, 'date': cell_font_size, 'main_header': 18}
+        custom_column_widths = {'A': 18, 'B': 15, 'C': col_c_width, 'D': col_d_width, 'E': col_d_width, 'F': 35}
+        custom_row_height = 25
+        month_name_for_file = dates_dataframe['persian_month'].iloc[0]
+        output_filename = f"فرم_حضور_غیاب_{month_name_for_file}_{target_year}.xlsx"
 
-        # 2. Generate the Excel file if data was found
-        if dates_dataframe is not None and not dates_dataframe.empty:
+        # Generate the file in memory
+        excel_data = generate_minimal_attendance_sheet(
+            dates_dataframe,
+            font_sizes=custom_font_sizes,
+            column_widths=custom_column_widths,
+            row_height=custom_row_height,
+            filename=output_filename
+        )
+        
+        if excel_data:
+            st.success(f"✅ فایل '{output_filename}' با موفقیت ساخته شد!")
             
-            # Define styles
-            custom_font_sizes = {'header': 12, 'cell': 11, 'date': 11, 'main_header': 18}
-            custom_column_widths = {'A': 18, 'B': 15, 'C': 8, 'D': 45, 'E': 45, 'F': 35}
-            custom_row_height = 25
-            month_name_for_file = dates_dataframe['persian_month'].iloc[0]
-            output_filename = f"فرم_حضور_غیاب_{month_name_for_file}_{target_year}.xlsx"
-
-            # Generate the file in memory
-            excel_data = generate_minimal_attendance_sheet(
-                dates_dataframe,
-                font_sizes=custom_font_sizes,
-                column_widths=custom_column_widths,
-                row_height=custom_row_height,
-                filename=output_filename
+            # Provide a download button
+            st.download_button(
+                label="📥 دانلود فایل اکسل",
+                data=excel_data,
+                file_name=output_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            
-            if excel_data:
-                st.success(f"✅ فایل '{output_filename}' با موفقیت ساخته شد!")
-                
-                # Provide a download button
-                st.download_button(
-                    label="دانلود فایل اکسل",
-                    data=excel_data,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-        else:
-            st.error("خطا: اطلاعاتی برای این ماه دریافت نشد. لطفا سال و ماه دیگری را امتحان کنید.")
+    else:
+        st.error("خطا: اطلاعاتی برای این ماه دریافت نشد. لطفا سال و ماه دیگری را امتحان کنید.")
