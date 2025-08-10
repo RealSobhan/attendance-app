@@ -4,19 +4,30 @@ from openpyxl.styles import Font, Alignment, Border, Side
 import os
 import requests
 import time
-import streamlit as st # Import Streamlit
+import streamlit as st
+from weasyprint import HTML, CSS # Import the new PDF library
+from io import BytesIO
+
+#======================================================================
+# FOR YOUR requirements.txt FILE
+#
+# Your requirements.txt file should now contain the following five lines:
+# ----------------------------------------------------------------------
+# openpyxl
+# pandas
+# requests
+# streamlit
+# weasyprint
+#======================================================================
 
 #======================================================================
 # FUNCTION 1: GETS DATA FROM THE API
-# This is the same function from the previous version.
 #======================================================================
 def get_calendar_from_api(year, month):
     """
     Gets calendar data for a specific Persian month and year using the holidayapi.ir API.
-    This version has NO external date library dependencies. It finds the first available
-    weekday from the API in the first week and calculates the rest.
     """
-    st.write(f"در حال دریافت اطلاعات برای ماه {month} سال {year}...")
+    progress_bar = st.progress(0, text="در حال دریافت اطلاعات از سرور تقویم...")
     
     persian_months = {
         1: 'فروردین', 2: 'اردیبهشت', 3: 'خرداد',
@@ -81,7 +92,9 @@ def get_calendar_from_api(year, month):
                     'persian_weekday': weekday_name,
                     'formatted_date': formatted_date
                 })
-            time.sleep(0.1)
+            time.sleep(0.05)
+            progress_bar.progress(day / 31, text=f"در حال بررسی روز {day}...")
+
         except requests.exceptions.RequestException:
             continue
         except ValueError:
@@ -91,18 +104,14 @@ def get_calendar_from_api(year, month):
         st.warning(f"هیچ روز درسی برای ماه {month} سال {year} یافت نشد.")
         return None
 
+    progress_bar.empty()
     st.write("اطلاعات با موفقیت دریافت شد.")
     return pd.DataFrame(school_days)
 
 #======================================================================
 # FUNCTION 2: GENERATES THE EXCEL FILE
-# This is the same function from the previous version.
 #======================================================================
-def generate_minimal_attendance_sheet(dates_df, 
-                                      font_sizes,
-                                      column_widths,
-                                      row_height,
-                                      filename):
+def generate_excel_sheet(dates_df, font_sizes, column_widths, row_height, filename):
     """
     Generates a single Excel sheet with a minimal attendance log from a pandas DataFrame.
     """
@@ -133,7 +142,7 @@ def generate_minimal_attendance_sheet(dates_df,
     month_header_cell.font = main_header_font
     month_header_cell.alignment = center_alignment
     month_header_cell.border = thin_border
-    ws.row_dimensions[1].height = row_height * 1.5
+    ws.row_dimensions[1].height = 45 
 
     table_start_row = 2
     headers = ["روز هفته", "تاریخ", "زنگ", "اسامی غایبین", "اسامی و میزان تاخیر", "نام و امضای دبیر"]
@@ -142,11 +151,11 @@ def generate_minimal_attendance_sheet(dates_df,
         cell.font = header_font
         cell.alignment = center_alignment
         cell.border = thin_border
-    ws.row_dimensions[table_start_row].height = row_height * 1.2
+    ws.row_dimensions[table_start_row].height = 35
 
     current_row = table_start_row + 1
     
-    for index, row_data in dates_df.iterrows():
+    for _, row_data in dates_df.iterrows():
         weekday = row_data['persian_weekday']
         
         if weekday in ['دوشنبه', 'چهارشنبه']:
@@ -180,23 +189,137 @@ def generate_minimal_attendance_sheet(dates_df,
         
         current_row += num_periods
 
-    # Save the workbook to a temporary file in memory
-    from io import BytesIO
+    ws.sheet_view.showGridLines = False
+    ws.print_area = f'A1:F{current_row - 1}'
+    for i in range(7, 200):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].hidden = True
+    for i in range(current_row, 500):
+        ws.row_dimensions[i].hidden = True
+
     virtual_workbook = BytesIO()
     wb.save(virtual_workbook)
     virtual_workbook.seek(0)
     return virtual_workbook
 
 #======================================================================
-# STREAMLIT USER INTERFACE (REDESIGNED)
+# NEW FUNCTION 3: GENERATES THE PDF FILE (IMPROVED)
+#======================================================================
+def generate_pdf(dates_df):
+    """
+    Generates a single-page A4 PDF by converting a carefully styled HTML table.
+    """
+    if dates_df is None or dates_df.empty:
+        return None
+
+    # --- Build the HTML String ---
+    month_name = dates_df['persian_month'].iloc[0]
+    
+    # --- Create Table Rows ---
+    table_rows = ""
+    for _, row_data in dates_df.iterrows():
+        weekday = row_data['persian_weekday']
+        
+        if weekday in ['دوشنبه', 'چهارشنبه']:
+            num_periods = 3
+            periods = ["اول", "دوم", "سوم"]
+        else:
+            num_periods = 4
+            periods = ["اول", "دوم", "سوم", "چهارم"]
+
+        # First row of a day block with rowspan for merged cells
+        table_rows += f"""
+                <tr>
+                    <td rowspan="{num_periods}">{weekday}</td>
+                    <td rowspan="{num_periods}">{row_data['formatted_date']}</td>
+                    <td>{periods[0]}</td>
+                    <td></td>
+                    <td></td>
+                    <td rowspan="{num_periods}"></td>
+                </tr>
+        """
+        # Subsequent rows for the same day (only 3 cells)
+        for i in range(1, num_periods):
+            table_rows += f"""
+                <tr>
+                    <td>{periods[i]}</td>
+                    <td></td>
+                    <td></td>
+                </tr>
+            """
+
+    # --- Full HTML Document with CSS ---
+    html = f"""
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            /* This CSS is crucial for correct PDF rendering */
+            @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700&display=swap');
+            body {{
+                font-family: 'Vazirmatn', sans-serif;
+                direction: rtl;
+                font-size: 10pt;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                border: 1px solid black;
+            }}
+            th, td {{
+                border: 1px solid black;
+                padding: 5px;
+                text-align: center;
+                vertical-align: middle;
+                height: 25px; /* Set a consistent row height */
+            }}
+            th {{
+                background-color: #e0e0e0;
+                font-weight: bold;
+            }}
+            .main-title {{
+                font-size: 20pt;
+                font-weight: bold;
+                text-align: center;
+                padding-bottom: 15px;
+            }}
+        </style>
+    </head>
+    <body lang="fa">
+        <div class="main-title">{month_name}</div>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 15%;">روز هفته</th>
+                    <th style="width: 15%;">تاریخ</th>
+                    <th style="width: 8%;">زنگ</th>
+                    <th style="width: 27%;">اسامی غایبین</th>
+                    <th style="width: 27%;">اسامی و میزان تاخیر</th>
+                    <th style="width: 8%;">امضا</th>
+                </tr>
+            </thead>
+            <tbody>
+                {table_rows}
+            </tbody>
+        </table>
+    </body>
+    </html>
+    """
+
+    # --- Convert HTML to PDF ---
+    # Use CSS to set page to A4 landscape
+    pdf_stylesheet = CSS(string='@page { size: A4 landscape; margin: 1cm; }')
+    pdf_bytes = HTML(string=html).write_pdf(stylesheets=[pdf_stylesheet])
+    return pdf_bytes
+
+#======================================================================
+# STREAMLIT USER INTERFACE
 #======================================================================
 
-st.set_page_config(layout="centered", page_title="سازنده فرم حضور و غیاب", page_icon="📄")
+st.set_page_config(layout="wide", page_title="سازنده فرم حضور و غیاب", page_icon="📄")
 
-# --- CUSTOM FONT AND RTL CSS ---
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Vazirmatn&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700&display=swap');
     html, body, [class*="st-"], [class*="css-"] {
         font-family: 'Vazirmatn', sans-serif;
         direction: rtl;
@@ -204,66 +327,63 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- SIDEBAR CONTROLS ---
-st.sidebar.header("تنظیمات")
-st.sidebar.write("سال و ماه مورد نظر خود را انتخاب کنید.")
-
+st.sidebar.header("🗓️ تنظیمات اصلی")
 target_year = st.sidebar.number_input("سال (مثلا: 1404)", min_value=1390, max_value=1450, value=1404)
 target_month = st.sidebar.number_input("ماه (مثلا: برای مهر 7)", min_value=1, max_value=12, value=7)
 
-with st.sidebar.expander("تنظیمات پیشرفته (اختیاری)"):
-    st.write("می‌توانید اندازه فونت و ستون‌ها را تغییر دهید.")
-    header_font_size = st.slider("اندازه فونت سربرگ", 8, 20, 12)
-    cell_font_size = st.slider("اندازه فونت داخلی", 8, 20, 11)
-    col_c_width = st.slider("عرض ستون 'زنگ'", 5, 20, 8)
-    col_d_width = st.slider("عرض ستون 'غایبین'", 20, 60, 45)
+st.sidebar.markdown("---")
+st.sidebar.header("🎨 تنظیمات ظاهری (فقط برای اکسل)")
+header_font_size = st.sidebar.slider("اندازه فونت سربرگ", 10, 24, 14)
+cell_font_size = st.sidebar.slider("اندازه فونت داخلی", 10, 24, 12)
+col_d_width = st.sidebar.slider("عرض ستون 'غایبین'", 30, 80, 50)
+custom_row_height = st.sidebar.slider("ارتفاع ردیف", 20, 50, 30)
 
-# --- MAIN PAGE ---
+st.sidebar.markdown("---")
+generate_button = st.sidebar.button("🚀 ساخت فایل‌ها", type="primary", use_container_width=True)
+
 st.title("📄 سازنده فرم حضور و غیاب")
 st.markdown("این برنامه به شما کمک می‌کند تا به سرعت فرم حضور و غیاب ماهانه برای کلاس خود بسازید.")
-
 st.markdown("---")
-st.subheader("راهنما")
-st.write("""
-1.  از منوی کنار صفحه، **سال** و **ماه** مورد نظر خود را وارد کنید.
-2.  روی دکمه **ساخت فایل اکسل** کلیک کنید.
-3.  منتظر بمانید تا فایل ساخته شود و سپس دکمه **دانلود** ظاهر خواهد شد.
-""")
 
-# --- Generate Button ---
-if st.sidebar.button("ساخت فایل اکسل", type="primary"):
-    
-    # 1. Get the data from the API
-    dates_dataframe = get_calendar_from_api(target_year, target_month)
+if generate_button:
+    with st.spinner("در حال ساخت فایل‌ها..."):
+        dates_dataframe = get_calendar_from_api(target_year, target_month)
 
-    # 2. Generate the Excel file if data was found
-    if dates_dataframe is not None and not dates_dataframe.empty:
-        
-        # Define styles based on advanced options
-        custom_font_sizes = {'header': header_font_size, 'cell': cell_font_size, 'date': cell_font_size, 'main_header': 18}
-        custom_column_widths = {'A': 18, 'B': 15, 'C': col_c_width, 'D': col_d_width, 'E': col_d_width, 'F': 35}
-        custom_row_height = 25
-        month_name_for_file = dates_dataframe['persian_month'].iloc[0]
-        output_filename = f"فرم_حضور_غیاب_{month_name_for_file}_{target_year}.xlsx"
-
-        # Generate the file in memory
-        excel_data = generate_minimal_attendance_sheet(
-            dates_dataframe,
-            font_sizes=custom_font_sizes,
-            column_widths=custom_column_widths,
-            row_height=custom_row_height,
-            filename=output_filename
-        )
-        
-        if excel_data:
-            st.success(f"✅ فایل '{output_filename}' با موفقیت ساخته شد!")
+        if dates_dataframe is not None and not dates_dataframe.empty:
+            month_name_for_file = dates_dataframe['persian_month'].iloc[0]
             
-            # Provide a download button
-            st.download_button(
-                label="📥 دانلود فایل اکسل",
-                data=excel_data,
-                file_name=output_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-    else:
-        st.error("خطا: اطلاعاتی برای این ماه دریافت نشد. لطفا سال و ماه دیگری را امتحان کنید.")
+            st.subheader("نتایج")
+            col1, col2 = st.columns(2)
+
+            # --- Generate and Display EXCEL Download Button ---
+            with col1:
+                output_filename_excel = f"فرم_حضور_غیاب_{month_name_for_file}_{target_year}.xlsx"
+                custom_font_sizes = {'header': header_font_size, 'cell': cell_font_size, 'date': cell_font_size, 'main_header': 18}
+                custom_column_widths = {'A': 15, 'B': 12, 'C': 8, 'D': col_d_width, 'E': col_d_width, 'F': 25}
+                excel_data = generate_excel_sheet(
+                    dates_dataframe, custom_font_sizes, custom_column_widths, custom_row_height, output_filename_excel
+                )
+                if excel_data:
+                    st.download_button(
+                        label="📥 دانلود فایل اکسل",
+                        data=excel_data,
+                        file_name=output_filename_excel,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+            
+            # --- Generate and Display PDF Download Button ---
+            with col2:
+                output_filename_pdf = f"فرم_حضور_غیاب_{month_name_for_file}_{target_year}.pdf"
+                pdf_data = generate_pdf(dates_dataframe)
+                if pdf_data:
+                    st.download_button(
+                        label="📄 دانلود فایل PDF",
+                        data=pdf_data,
+                        file_name=output_filename_pdf,
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+            st.success("✅ فایل‌ها با موفقیت ساخته شدند!")
+        else:
+            st.error("خطا: اطلاعاتی برای این ماه دریافت نشد.")
